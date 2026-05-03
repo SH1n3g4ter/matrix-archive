@@ -193,6 +193,10 @@ def safe_path(directory: str, filename: str) -> str:
         raise ValueError(f"Unsafe path detected: {full_path!r}")
     return full_path
 
+def safe_room_name(name: str) -> str:
+    """Strip characters that are invalid in filenames/paths."""
+    return re.sub(r'[/\\:*?"<>|]', '_', name).strip()
+
 def get_sso_login_token(url, sso, username, password):
     b = mechanize.Browser()
     b.set_handle_robots(False)
@@ -279,7 +283,7 @@ async def write_event(
     client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
 ) -> None:
     if not ARGS.no_media:
-        media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+        media_dir = mkdir(f"{OUTPUT_DIR}/{safe_room_name(room.display_name)}_{room.room_id}_media")
     sender_name = f"<{event.sender}>"
     if event.sender in room.users:
         # If user is still present in room, include current nickname
@@ -325,7 +329,7 @@ async def write_event(
 
 
 async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
-    avatar_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_avatars")
+    avatar_dir = mkdir(f"{OUTPUT_DIR}/{safe_room_name(room.display_name)}_{room.room_id}_avatars")
     for user in room.users.values():
         if user.avatar_url:
             safe_uid = re.sub(r"[^\w\-.]", "_", user.user_id)
@@ -377,7 +381,7 @@ async def write_room_events(client, room):
     # as well.
     fetch_room_events_ = partial(fetch_room_events, client, start_token, room)
     async with aiofiles.open(
-        f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}.json", "w"
+        f"{OUTPUT_DIR}/{safe_room_name(room.display_name)}_{room.room_id}.json", "w"
     ) as f_json:
         for events in [
             reversed(await fetch_room_events_(MessageDirection.back)),
@@ -387,7 +391,7 @@ async def write_room_events(client, room):
             for event in events:
                 try:
                     if not ARGS.no_media:
-                        media_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_media")
+                        media_dir = mkdir(f"{OUTPUT_DIR}/{safe_room_name(room.display_name)}_{room.room_id}_media")
 
                     # add additional information to the message source
                     sender_name = f"<{event.sender}>"
@@ -502,4 +506,4 @@ if __name__ == "__main__":
         # Select all rooms by adding a regex pattern which matches every string
         ARGS.roomregex.append(".*")
     OUTPUT_DIR = mkdir(ARGS.folder)
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
