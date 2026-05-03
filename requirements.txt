@@ -1,4 +1,0 @@
-matrix-nio[e2e] >= 0.20.0
-pyyaml
-mechanize
-yarl

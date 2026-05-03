@@ -185,6 +185,13 @@ def mkdir(path):
         pass
     return path
 
+def safe_path(directory: str, filename: str) -> str:
+    """Resolve path and raise if it escapes the target directory."""
+    directory = os.path.realpath(directory)
+    full_path = os.path.realpath(os.path.join(directory, filename))
+    if not full_path.startswith(directory + os.sep):
+        raise ValueError(f"Unsafe path detected: {full_path!r}")
+    return full_path
 
 def get_sso_login_token(url, sso, username, password):
     b = mechanize.Browser()
@@ -294,7 +301,10 @@ async def write_event(
         await output_file.write(serialize_event(dict(type="text", body=event.body,)))
     elif isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
         media_data = await download_mxc(client, event.url)
-        filename = choose_filename(f"{media_dir}/{event.body}")
+        safe_name = os.path.basename(event.body).replace("\x00", "")
+        if not safe_name:
+            safe_name = "unnamed"
+        filename = choose_filename(safe_path(media_dir, safe_name))
         async with aiofiles.open(filename, "wb") as f:
             try:
                 await f.write(
@@ -318,7 +328,8 @@ async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
     avatar_dir = mkdir(f"{OUTPUT_DIR}/{room.display_name}_{room.room_id}_avatars")
     for user in room.users.values():
         if user.avatar_url:
-            async with aiofiles.open(f"{avatar_dir}/{user.user_id}", "wb") as f:
+            safe_uid = re.sub(r"[^\w\-.]", "_", user.user_id)
+            async with aiofiles.open(f"{avatar_dir}/{safe_uid}", "wb") as f:
                 await f.write(await download_mxc(client, user.avatar_url))
 
 
@@ -388,7 +399,10 @@ async def write_room_events(client, room):
                     # download media if necessary
                     if isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
                         media_data = await download_mxc(client, event.url)
-                        filename = choose_filename(f"{media_dir}/{event.body}")
+                        safe_name = os.path.basename(event.body).replace("\x00", "")
+                        if not safe_name:
+                            safe_name = "unnamed"
+                        filename = choose_filename(safe_path(media_dir, safe_name))
                         event.source["_file_path"] = filename
                         async with aiofiles.open(filename, "wb") as f_media:
                             try:
