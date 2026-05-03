@@ -70,9 +70,10 @@ import yaml
 import json
 import mechanize
 from yarl import URL
+import logging
+logging.getLogger("nio.responses").setLevel(logging.ERROR)
 
 DEVICE_NAME = "matrix-archive"
-
 
 def parse_args():
     """Parse arguments from command line call"""
@@ -197,6 +198,11 @@ def safe_room_name(name: str) -> str:
     """Strip characters that are invalid in filenames/paths."""
     return re.sub(r'[/\\:*?"<>|]', '_', name).strip()
 
+def media_filename(url: str, body: str) -> str:
+    media_id = urlparse(url).path.strip("/").split("/")[-1]
+    safe_body = os.path.basename(body).replace("\x00", "") or "unnamed"
+    return f"{media_id}_{safe_body}"
+
 def get_sso_login_token(url, sso, username, password):
     b = mechanize.Browser()
     b.set_handle_robots(False)
@@ -261,72 +267,12 @@ async def create_client() -> AsyncClient:
     await client.import_keys(room_keys_path, room_keys_password)
     return client
 
-
 async def select_room(client: AsyncClient) -> MatrixRoom:
     print("\nList of joined rooms (room id, display name):")
     for room_id, room in client.rooms.items():
         print(f"{room_id}, {room.display_name}")
     room_id = input(f"Enter room id: ")
     return client.rooms[room_id]
-
-
-def choose_filename(filename):
-    start, ext = os.path.splitext(filename)
-    for i in itertools.count(1):
-        if not os.path.exists(filename):
-            break
-        filename = f"{start}({i}){ext}"
-    return filename
-
-
-async def write_event(
-    client: AsyncClient, room: MatrixRoom, output_file: TextIO, event: RoomMessage
-) -> None:
-    if not ARGS.no_media:
-        media_dir = mkdir(f"{OUTPUT_DIR}/{safe_room_name(room.display_name)}_{room.room_id}_media")
-    sender_name = f"<{event.sender}>"
-    if event.sender in room.users:
-        # If user is still present in room, include current nickname
-        sender_name = f"{room.users[event.sender].display_name} {sender_name}"
-    serialize_event = lambda event_payload: yaml.dump(
-        [
-            {
-                **dict(
-                    sender_id=event.sender,
-                    sender_name=sender_name,
-                    timestamp=event.server_timestamp,
-                ),
-                **event_payload,
-            }
-        ]
-    )
-
-    if isinstance(event, RoomMessageFormatted):
-        await output_file.write(serialize_event(dict(type="text", body=event.body,)))
-    elif isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
-        media_data = await download_mxc(client, event.url)
-        safe_name = os.path.basename(event.body).replace("\x00", "")
-        if not safe_name:
-            safe_name = "unnamed"
-        filename = choose_filename(safe_path(media_dir, safe_name))
-        async with aiofiles.open(filename, "wb") as f:
-            try:
-                await f.write(
-                    crypto.attachments.decrypt_attachment(
-                        media_data,
-                        event.source["content"]["file"]["key"]["k"],
-                        event.source["content"]["file"]["hashes"]["sha256"],
-                        event.source["content"]["file"]["iv"],
-                    )
-                )
-            except KeyError:  # EAFP: Unencrypted media produces KeyError
-                await f.write(media_data)
-            # Set atime and mtime of file to event timestamp
-            os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
-        await output_file.write(serialize_event(dict(type="media", src="." + filename[len(OUTPUT_DIR):],)))
-    elif isinstance(event, RedactedEvent):
-        await output_file.write(serialize_event(dict(type="redacted",)))
-
 
 async def save_avatars(client: AsyncClient, room: MatrixRoom) -> None:
     avatar_dir = mkdir(f"{OUTPUT_DIR}/{safe_room_name(room.display_name)}_{room.room_id}_avatars")
@@ -398,30 +344,30 @@ async def write_room_events(client, room):
                     if event.sender in room.users:
                         # If user is still present in room, include current nickname
                         sender_name = f"{room.users[event.sender].display_name} {sender_name}"
-                        event.source["_sender_name"] = sender_name
+                    event.source["_sender_name"] = sender_name
 
                     # download media if necessary
                     if isinstance(event, (RoomMessageMedia, RoomEncryptedMedia)):
-                        media_data = await download_mxc(client, event.url)
-                        safe_name = os.path.basename(event.body).replace("\x00", "")
-                        if not safe_name:
-                            safe_name = "unnamed"
-                        filename = choose_filename(safe_path(media_dir, safe_name))
+                        filename = safe_path(media_dir, media_filename(event.url, event.body))
                         event.source["_file_path"] = filename
-                        async with aiofiles.open(filename, "wb") as f_media:
-                            try:
-                                await f_media.write(
-                                    crypto.attachments.decrypt_attachment(
-                                        media_data,
-                                        event.source["content"]["file"]["key"]["k"],
-                                        event.source["content"]["file"]["hashes"]["sha256"],
-                                        event.source["content"]["file"]["iv"],
+                        if not os.path.exists(filename):
+                            media_data = await download_mxc(client, event.url)
+                            async with aiofiles.open(filename, "wb") as f_media:
+                                try:
+                                    await f_media.write(
+                                        crypto.attachments.decrypt_attachment(
+                                            media_data,
+                                            event.source["content"]["file"]["key"]["k"],
+                                            event.source["content"]["file"]["hashes"]["sha256"],
+                                            event.source["content"]["file"]["iv"],
+                                        )
                                     )
-                                )
-                            except KeyError:  # EAFP: Unencrypted media produces KeyError
-                                await f_media.write(media_data)
-                            # Set atime and mtime of file to event timestamp
+                                except KeyError:  # EAFP: Unencrypted media produces KeyError
+                                    await f_media.write(media_data)
+                                # Set atime and mtime of file to event timestamp
                             os.utime(filename, ns=((event.server_timestamp * 1000000,) * 2))
+                        else:
+                            logging.debug(f"file {filename} already exists, skipping")
 
                     # write out the processed message source
                     events_parsed.append(event.source)
